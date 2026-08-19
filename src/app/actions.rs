@@ -465,6 +465,18 @@ impl AppState {
             let show_tab_row =
                 multi_tab || (matches!(query_kind, NavigatorQueryKind::Text) && tab_matches);
             let mut pane_rows = self.navigator_pane_rows_for_tab(ws_idx, tab_idx, show_tab_row);
+            // A tab holding exactly one pane collapses into a single row so the
+            // tree does not spend two lines on one terminal. The pane row takes
+            // the tab's depth and carries both labels, and stays a pane target
+            // because activating it must focus the pane, not just the tab.
+            let merged_tab_row = show_tab_row && pane_rows.len() == 1;
+            if merged_tab_row {
+                if let Some(row) = pane_rows.first_mut() {
+                    row.depth = 1;
+                    row.label = format!("{} · {}", tab_row.label, row.label);
+                    row.search_text = format!("{} {}", tab_row.search_text, row.search_text);
+                }
+            }
             let filtered_panes = match query_kind {
                 NavigatorQueryKind::Empty => pane_rows,
                 NavigatorQueryKind::State(filter) => pane_rows
@@ -485,7 +497,7 @@ impl AppState {
                     .collect::<Vec<_>>(),
             };
 
-            if show_tab_row && (tab_matches || !filtered_panes.is_empty()) {
+            if show_tab_row && !merged_tab_row && (tab_matches || !filtered_panes.is_empty()) {
                 rows.push(tab_row);
             }
             rows.extend(filtered_panes);
@@ -3658,9 +3670,11 @@ mod tests {
     }
 
     #[test]
-    fn navigator_rows_show_tab_nodes_only_for_multi_tab_workspaces() {
+    fn navigator_rows_show_tab_nodes_only_for_multi_pane_tabs() {
         let mut state = app_with_workspaces(&["single", "multi"]);
         state.workspaces[1].test_add_tab(Some("tests"));
+        // Tab 0 of "multi" keeps two panes, so it still needs its own node.
+        state.workspaces[1].test_split(Direction::Horizontal);
         state.ensure_test_terminals();
 
         state.open_navigator();
@@ -3677,13 +3691,56 @@ mod tests {
                 tab_idx: 0
             }
         )));
-        assert!(rows.iter().any(|row| matches!(
+        assert!(!rows.iter().any(|row| matches!(
             row.target,
             crate::app::state::NavigatorTarget::Tab {
                 ws_idx: 1,
                 tab_idx: 1
             }
         )));
+    }
+
+    #[test]
+    fn navigator_rows_merge_single_pane_tab_into_pane_row() {
+        let mut state = app_with_workspaces(&["ws"]);
+        state.workspaces[0].tabs[0].custom_name = Some("main".into());
+        state.workspaces[0].test_add_tab(Some("tests"));
+        state.ensure_test_terminals();
+
+        state.open_navigator();
+        let rows = state.navigator_rows();
+
+        assert!(
+            !rows.iter().any(|row| row.is_tab),
+            "single-pane tabs must not keep a separate tab row"
+        );
+        let merged = rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.target,
+                    crate::app::state::NavigatorTarget::Pane { ws_idx: 0, .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(merged.len(), 2);
+        // The merged row sits at the tab's depth and carries both labels.
+        assert!(merged.iter().all(|row| row.depth == 1));
+        assert!(merged[0].label.starts_with("main · "));
+        assert!(merged[1].label.starts_with("tests · "));
+        // Searching the tab name still finds the merged row.
+        state.navigator.query = "tests".into();
+        assert!(state.navigator_rows().iter().any(|row| {
+            row.matched
+                && matches!(
+                    row.target,
+                    crate::app::state::NavigatorTarget::Pane {
+                        ws_idx: 0,
+                        tab_idx: 1,
+                        ..
+                    }
+                )
+        }));
     }
 
     #[test]
@@ -3700,9 +3757,10 @@ mod tests {
             row.matched
                 && matches!(
                     row.target,
-                    crate::app::state::NavigatorTarget::Tab {
+                    crate::app::state::NavigatorTarget::Pane {
                         ws_idx: 0,
-                        tab_idx: 0
+                        tab_idx: 0,
+                        ..
                     }
                 )
         }));
@@ -3714,9 +3772,10 @@ mod tests {
             .get(state.navigator.selected)
             .is_some_and(|row| matches!(
                 row.target,
-                crate::app::state::NavigatorTarget::Tab {
+                crate::app::state::NavigatorTarget::Pane {
                     ws_idx: 1,
-                    tab_idx: 0
+                    tab_idx: 0,
+                    ..
                 }
             )));
         assert!(!rows.iter().any(|row| matches!(
