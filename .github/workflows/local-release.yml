@@ -91,7 +91,11 @@ jobs:
         run: |
           cp target/${{ matrix.target }}/release/herdr ${{ matrix.name }}
           if [ "$RUNNER_OS" = "Linux" ]; then
-            file ${{ matrix.name }} | grep -q "statically linked"
+            # musl x86_64 reports "static-pie linked" from file(1), so check the
+            # combined file+ldd output the same way the upstream workflow does.
+            file ${{ matrix.name }} > LINKAGE.txt
+            ldd ${{ matrix.name }} 2>&1 | tee -a LINKAGE.txt
+            grep -q "statically linked" LINKAGE.txt
           fi
           shasum -a 256 ${{ matrix.name }} > ${{ matrix.name }}.sha256
 
