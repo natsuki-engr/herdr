@@ -82,6 +82,26 @@ branch is the untouched upstream mirror.
 To rebuild a bad release, bump to the next `-local.<n>` rather than moving a
 tag.
 
+### Inherited upstream workflows are disabled
+
+The fork inherits upstream's workflows, and several of them misfire here. They
+are disabled with `gh workflow disable` (state `disabled_manually`, which
+survives upstream merges):
+
+| Workflow | Why |
+| --- | --- |
+| `release.yml` | Triggers on `push: tags: ['v*']`, so it matches `v*-local.*` and runs upstream's full publish pipeline on every release tag. |
+| `website.yml`, `preview.yml` | Publish upstream docs and the preview channel. |
+| `nix.yml`, `windows-arm64.yml` | Fire on master mirror updates; nothing here consumes them. |
+| `label-next-release-issues.yml` | Closes "released" issues on every master push. |
+| `pr-gate.yml` | Auto-closes unsolicited PRs — on a fork it would close your own. |
+
+Still active: `ci.yml`, `local-release.yml`, `build-artifacts-manual.yml`. Note
+that `ci.yml` only covers `master` and pull requests, so it never validates the
+patches on `local` — run `just check` locally before tagging.
+
+Re-enable any of them with `gh workflow enable <file> --repo natsuki-engr/herdr`.
+
 ## Updating the tap
 
 The tap is [natsuki-engr/homebrew-local](https://github.com/natsuki-engr/homebrew-local).
