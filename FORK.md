@@ -95,6 +95,13 @@ git commit -am "herdr: 0.8.3-local.1" && git push
 brew update && brew upgrade natsuki-engr/local/herdr
 ```
 
+The tap's CI runs `brew style` only. The scaffolding `brew tap-new` generates
+(test-bot, pr-pull, autobump, dependabot) was removed: it targets taps that
+build and publish bottles from source, `brew readall` fails on the uncovered
+Intel macOS combination, and autobump would rewrite the formula to upstream
+herdr versions. Do not restore it. A wrong `sha256` is not caught by CI, but
+`brew install` reports a checksum mismatch clearly.
+
 ## Installing on a new machine
 
 ```bash
