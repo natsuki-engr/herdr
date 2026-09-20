@@ -30,11 +30,18 @@ git remote add upstream https://github.com/herdrdev/herdr.git   # once
 
 | Commit | Change |
 | --- | --- |
-| `b570f579` | `feat(navigator)`: single-pane tabs collapse into one navigator row |
-| `84ce1090` | `ci`: macOS artifact build uses Homebrew's patched zig |
 | `f102c494` | `ci`: tag-triggered release workflow |
 | `5d10ea1c` | `ci`: build macOS arm64 + Linux musl targets |
 | `bf53976d` | `ci`: fix static link check for musl x86_64 |
+
+Two patches were dropped when tracking upstream at v0.9.1:
+
+- `b570f579` `feat(navigator)`: single-pane tabs collapse into one navigator row.
+  Upstream moved the navigator to `src/client/shell/aggregate_navigation.rs`,
+  and its row builder emits one row per pane with the tab name folded into the
+  label. The behaviour is upstream's now.
+- `84ce1090` `ci`: macOS artifact build uses Homebrew's patched zig. Upstream
+  moved to zig 0.16.0, which links fine from a vanilla tarball.
 
 ## Tracking upstream
 
@@ -50,12 +57,19 @@ git push origin master
 
 git switch local
 git merge master          # resolve conflicts, then git merge --continue
-just check                # or: cargo fmt -- --check && cargo test --bins
+just ci                   # lint + nextest + maintenance + integration assets
 git push origin local
 ```
 
 Merges only ever go `master` → `local`. Merging the other way destroys the
 mirror.
+
+After a large merge, also check:
+
+- the zig version in `vendor/libghostty-vt/build.zig.zon` against what is
+  installed locally and what `local-release.yml` installs;
+- whether upstream renamed or added a workflow, since `gh workflow disable` is
+  keyed on the workflow, not the filename.
 
 ## Cutting a release
 
@@ -91,7 +105,8 @@ survives upstream merges):
 | Workflow | Why |
 | --- | --- |
 | `release.yml` | Triggers on `push: tags: ['v*']`, so it matches `v*-local.*` and runs upstream's full publish pipeline on every release tag. |
-| `website.yml`, `preview.yml` | Publish upstream docs and the preview channel. |
+| `website-deploy.yml`, `preview.yml` | Publish upstream docs and the preview channel. `website-deploy.yml` replaced `website.yml` in v0.9.1; a rename resets the disabled state, so re-check after a rename. |
+| `distribution.yml` | Validates upstream docs/distribution contracts on every master mirror push; nothing here consumes it. |
 | `nix.yml`, `windows-arm64.yml` | Fire on master mirror updates; nothing here consumes them. |
 | `label-next-release-issues.yml` | Closes "released" issues on every master push. |
 | `pr-gate.yml` | Auto-closes unsolicited PRs — on a fork it would close your own. |
@@ -158,26 +173,28 @@ echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
 
 ## Build toolchain
 
-**macOS requires Homebrew's zig, not a vanilla one.**
+Upstream pins **zig 0.16.0** through `vendor/libghostty-vt/build.zig.zon`
+(`minimum_zig_version`). Any vanilla 0.16.0 works, including mise:
 
 ```bash
-brew install zig@0.15
+mise use -g zig@0.16.0
 ```
 
-Vanilla zig 0.15.2 — from mise, asdf, the official tarball, or the
-`mlugg/setup-zig` action — cannot link against the macOS 26 SDK. Every libc
-symbol comes up undefined, and even a hello-world `zig cc` fails. Upstream's
-`ci.yml` calls the Homebrew build "patched Zig" for this reason.
+This was not always true. zig **0.15.2** — the pin before v0.9.1 — could not
+link against the macOS 26 SDK from a vanilla tarball (mise, asdf, the official
+release, or `mlugg/setup-zig`): every libc symbol came up undefined, and even a
+hello-world `zig cc` failed. `SDKROOT`, `ZIG_LIBC`, `xcode-select`, and wrapping
+`ZIG` to inject `--sysroot` all failed to fix it, because zig compiles its build
+runner before any of those apply. The only working macOS 0.15.2 was Homebrew's
+patched `zig@0.15`. Both this file and `local-release.yml` carried workarounds
+for it; 0.16.0 removed the need, and upstream's own workflows now install a
+vanilla tarball on macOS too.
 
-`SDKROOT`, `ZIG_LIBC`, `xcode-select`, and wrapping `ZIG` to inject `--sysroot`
-all fail to fix it: zig compiles its build runner before any of those apply.
-zig 0.16 links correctly but `vendor/libghostty-vt` pins 0.15.2 via
-`requireZig`.
+If `zig@0.15` is still installed via Homebrew it only shadows the mise version
+in shells without mise activation, and the build then fails `requireZig`. Remove
+it with `brew uninstall zig@0.15`.
 
-Homebrew symlinks it into the brew prefix, so plain `cargo build` works with no
-PATH setup.
-
-Linux builds are unaffected and use `mlugg/setup-zig` normally.
+Linux builds were never affected.
 
 ## Gotchas
 
@@ -187,10 +204,22 @@ Linux builds are unaffected and use `mlugg/setup-zig` normally.
 - **Swapping the binary does not restart the server.** A running server keeps
   its old inode, so `herdr status server` may report `compatible: no` until you
   `herdr server stop` and start again. That loses open panes.
-- **`just check` needs cargo-nextest** (`brew install cargo-nextest`). Plain
-  `cargo test --bins` runs every test in one process, which trips two tests that
-  depend on process-global state (`generated_workspace_ids_are_short_base32_handles`,
-  `manifest_action_invoke_injects_plugin_paths`). Both pass in isolation.
+- **`cargo test --bins` is not a usable fallback.** It runs every test in one
+  process, where tests that re-invoke the test binary die on `SIGPIPE`
+  (`io error when listing tests: BrokenPipe`), and two tests that depend on
+  process-global state fail (`generated_workspace_ids_are_short_base32_handles`,
+  `manifest_action_invoke_injects_plugin_paths`). Use the real toolchain:
+
+  ```bash
+  mise use -g just@latest
+  mise use -g cargo:cargo-nextest@latest   # builds from source, ~3 min
+  ```
+
+  `cargo-nextest` is not in mise's registry and its release assets do not match
+  the `ubi`/`github` backend's filter, so the `cargo:` backend is the way in.
+- **`just check` also runs `windows-lint`**, which needs the xwin Windows SDK
+  (`just setup-windows-cross`). The fork does not ship a Windows artifact, so
+  `just ci` is the gate that matters before tagging.
 - **Do not open PRs upstream.** Unsolicited implementation PRs from accounts
   outside `.github/APPROVED_CONTRIBUTORS` are closed automatically. See
   `CONTRIBUTING.md`.
