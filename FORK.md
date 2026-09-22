@@ -71,13 +71,51 @@ After a large merge, also check:
 - whether upstream renamed or added a workflow, since `gh workflow disable` is
   keyed on the workflow, not the filename.
 
+## Shipping an update to this machine
+
+`brew upgrade` on its own never picks up a new build. The tap's formula pins an
+exact release tag, so nothing moves until that formula is edited and pushed. The
+full chain, from a merged `local` to a running new binary:
+
+```bash
+# 1. tag — the Local release workflow builds the three artifacts (~6 min)
+git tag v0.9.1-local.1 && git push origin v0.9.1-local.1
+gh run watch --repo natsuki-engr/herdr \
+  "$(gh run list --repo natsuki-engr/herdr --workflow local-release.yml \
+       --limit 1 --json databaseId --jq '.[0].databaseId')"
+
+# 2. read the url/sha256 pairs the workflow printed into the release notes
+gh release view v0.9.1-local.1 --repo natsuki-engr/herdr
+
+# 3. bump the formula: version + all three url/sha256 pairs
+cd "$(brew --repo natsuki-engr/local)"
+$EDITOR Formula/herdr.rb
+git commit -am "herdr: 0.9.1-local.1" && git push
+
+# 4. now brew has something to upgrade to
+brew update && brew upgrade natsuki-engr/local/herdr
+
+# 5. restart the server — a swapped binary does not replace the running one
+herdr server stop     # open panes are lost
+```
+
+Step 5 is not optional. The running server holds the old inode, so
+`herdr status server` keeps reporting `compatible: no` until it is stopped and
+started again.
+
+Skipping step 3 is the usual mistake: `brew update` refreshes Homebrew and the
+tap's git contents, but the formula still names the previous tag, so
+`brew upgrade` correctly reports nothing to do.
+
+Details for each step are in the sections below.
+
 ## Cutting a release
 
 Tag `v<upstream-version>-local.<n>` and push. Everything else is automated by
 `.github/workflows/local-release.yml`.
 
 ```bash
-git tag v0.8.3-local.1 && git push origin v0.8.3-local.1
+git tag v0.9.1-local.1 && git push origin v0.9.1-local.1
 ```
 
 The workflow builds three targets and publishes a GitHub release:
@@ -126,7 +164,7 @@ After a release, update `Formula/herdr.rb`: bump `version` and all three
 ```bash
 cd "$(brew --repo natsuki-engr/local)"
 $EDITOR Formula/herdr.rb
-git commit -am "herdr: 0.8.3-local.1" && git push
+git commit -am "herdr: 0.9.1-local.1" && git push
 brew update && brew upgrade natsuki-engr/local/herdr
 ```
 
